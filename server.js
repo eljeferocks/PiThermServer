@@ -9,6 +9,8 @@ Tom Holderness 03/01/2013
 Ref: www.cl.cam.ac.uk/freshers/raspberrypi/tutorials/temperature/
 */
 
+//Not Tested
+
 // Load node modules
 var fs = require('fs');
 var sys = require('sys');
@@ -24,19 +26,27 @@ var staticServer = new nodestatic.Server(".");
 // Setup database connection for logging
 var db = new sqlite3.Database('./piTemps.db');
 
+// Insert sensors into dictionary for DB naming
+var zone_id = [
+	['/sys/bus/w1/devices/28-000004d12291/w1_slave', 't1'],
+	['/sys/bus/w1/devices/28-00000513dea8/w1_slave', 't2'],
+	['/sys/bus/w1/devices/28-00000512f588/w1_slave', 't3'],
+	['/sys/bus/w1/devices/28-000004d11bb4/w1_slave', 't4'],
+	['sys/bus/w1/devices/28-00000512f483/w1_slave', 't5']];
+
 // Write a single temperature record in JSON format to database table.
 function insertTemp(data){
    // data is a javascript object   
-   var statement = db.prepare("INSERT INTO temperature_records VALUES (?, ?)");
+   var statement = db.prepare("INSERT INTO temperature_records VALUES (?, ?, ?)");
    // Insert values into prepared statement
-   statement.run(data.temperature_record[0].unix_time, data.temperature_record[0].celsius);
+   statement.run(data.temperature_record[0].unix_time, data.temperature_record[0].zone, data.temperature_record[0].celsius);
    // Execute the statement
    statement.finalize();
 }
 
 // Read current temperature from sensor
-function readTemp(callback){
-   fs.readFile('/sys/bus/w1/devices/28-00000400a88a/w1_slave', function(err, buffer)
+function readTemp(sensor_id, callback){
+   fs.readFile(sensor_id[0], function(err, buffer)
 	{
       if (err){
          console.error(err);
@@ -49,13 +59,11 @@ function readTemp(callback){
       // Extract temperature from string and divide by 1000 to give celsius
       var temp  = parseFloat(data[data.length-1].split("=")[1])/1000.0;
 
-      // Round to one decimal place
-      temp = Math.round(temp * 10) / 10;
-
-      // Add date/time to temperature
+      // Add date/time and zone to temperature
    	var data = {
             temperature_record:[{
             unix_time: Date.now(),
+            zone: sensor_id[1],
             celsius: temp
             }]};
 
@@ -66,10 +74,13 @@ function readTemp(callback){
 
 // Create a wrapper function which we'll use specifically for logging
 function logTemp(interval){
-      // Call the readTemp function with the insertTemp function as output to get initial reading
-      readTemp(insertTemp);
-      // Set the repeat interval (milliseconds). Third argument is passed as callback function to first (i.e. readTemp(insertTemp)).
-      setInterval(readTemp, interval, insertTemp);
+      // Needs to iterate over zones
+      for (var i = 0; i < zone_id.length; i++) {
+      	// Call the readTemp function with the insertTemp function as output to get initial reading
+      	readTemp(zone_id[i],insertTemp);
+      	// Set the repeat interval (milliseconds). Third argument is passed as callback function to first (i.e. readTemp(insertTemp)).
+      	setInterval(readTemp(zone_id[i]), interval, insertTemp);
+      }
 };
 
 // Get temperature records from database
@@ -77,17 +88,19 @@ function selectTemp(num_records, start_date, callback){
    // - Num records is an SQL filter from latest record back trough time series, 
    // - start_date is the first date in the time-series required, 
    // - callback is the output function
-   var current_temp = db.all("SELECT * FROM (SELECT * FROM temperature_records WHERE unix_time > (strftime('%s',?)*1000) ORDER BY unix_time DESC LIMIT ?) ORDER BY unix_time;", start_date, num_records,
-      function(err, rows){
-         if (err){
-			   response.writeHead(500, { "Content-type": "text/html" });
+   for (var i = 0; i < zone_id.length; i++) {
+       var current_temp = db.all("SELECT * FROM (SELECT * FROM (SELECT * FROM temperature_records WHERE zone = ?) WHERE unix_time > (strftime('%s',?)*1000) ORDER BY unix_time DESC LIMIT ?) ORDER BY unix_time;", zone_id[i][0], start_date, num_records,
+          function(err, rows){
+             if (err){
+    			   response.writeHead(500, { "Content-type": "text/html" });
 			   response.end(err + "\n");
 			   console.log('Error serving querying database. ' + err);
 			   return;
 				      }
-         data = {temperature_record:[rows]}
-         callback(data);
-   });
+             data.push(zone: zone_id[i][1], temperature_record:[rows])
+             callback(data);
+          });
+   };
 };
 
 // Setup node http server
