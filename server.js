@@ -28,11 +28,27 @@ var db = new sqlite3.Database('./piTemps.db');
 
 // Insert sensors into dictionary for DB naming
 var zone_id = [
-	['/sys/bus/w1/devices/28-000004d12291/w1_slave', 't1'],
-	['/sys/bus/w1/devices/28-00000513dea8/w1_slave', 't2'],
-	['/sys/bus/w1/devices/28-00000512f588/w1_slave', 't3'],
-	['/sys/bus/w1/devices/28-000004d11bb4/w1_slave', 't4'],
-	['sys/bus/w1/devices/28-00000512f483/w1_slave', 't5']];
+	['/sys/bus/w1/devices/28-000004d12291/w1_slave', 'Tank'],
+	['/sys/bus/w1/devices/28-00000513dea8/w1_slave', 'Outside'],
+	['/sys/bus/w1/devices/28-00000512f588/w1_slave', 'Heater'],
+	['/sys/bus/w1/devices/28-000004d11bb4/w1_slave', 'Greenhouse'],
+	['sys/bus/w1/devices/28-00000512f483/w1_slave', 'Box']];
+
+//Read filesystem to check for present thermoprobes
+//Taken from chamerling ds18b20 code
+var sensors = function(callback) {
+  callback = utils.safe(callback);
+  fs.readFile('/sys/bus/w1/devices/w1_bus_master1/w1_master_slaves', 'utf8', function (err, data) {
+    if (err) {
+      callback(err);
+    } else {
+      var parts = data.split("\n");
+      parts.pop();
+      callback(null, parts);
+    }
+  });
+}
+exports.sensors = sensors;
 
 // Write a single temperature record in JSON format to database table.
 function insertTemp(data){
@@ -46,7 +62,7 @@ function insertTemp(data){
 
 // Read current temperature from sensor
 function readTemp(sensor_id, callback){
-   fs.readFile(sensor_id[0], function(err, buffer)
+   fs.readFile(sensor_id, function(err, buffer)
 	{
       if (err){
          console.error(err);
@@ -63,7 +79,7 @@ function readTemp(sensor_id, callback){
    	var data = {
             temperature_record:[{
             unix_time: Date.now(),
-            zone: sensor_id[1],
+            zone: zone_id.sensor_id,
             celsius: temp
             }]};
 
@@ -75,9 +91,9 @@ function readTemp(sensor_id, callback){
 // Create a wrapper function which we'll use specifically for logging
 function logTemp(interval){
       // Needs to iterate over zones
-      for (var i = 0; i < zone_id.length; i++) {
+      for (var i = 0; i < sensors.length; i++) {
       	// Call the readTemp function with the insertTemp function as output to get initial reading
-      	readTemp(zone_id[i],insertTemp);
+      	readTemp(sensors[i],insertTemp);
       	// Set the repeat interval (milliseconds). Third argument is passed as callback function to first (i.e. readTemp(insertTemp)).
       	setInterval(readTemp(zone_id[i]), interval, insertTemp);
       }
@@ -88,8 +104,8 @@ function selectTemp(num_records, start_date, callback){
    // - Num records is an SQL filter from latest record back trough time series, 
    // - start_date is the first date in the time-series required, 
    // - callback is the output function
-   for (var i = 0; i < zone_id.length; i++) {
-       var current_temp = db.all("SELECT * FROM (SELECT * FROM (SELECT * FROM temperature_records WHERE zone = ?) WHERE unix_time > (strftime('%s',?)*1000) ORDER BY unix_time DESC LIMIT ?) ORDER BY unix_time;", zone_id[i][0], start_date, num_records,
+   for (var i = 0; i < sensors.length; i++) {
+       var current_temp = db.all("SELECT * FROM (SELECT * FROM (SELECT * FROM temperature_records WHERE zone = ?) WHERE unix_time > (strftime('%s',?)*1000) ORDER BY unix_time DESC LIMIT ?) ORDER BY unix_time;", sensors[i], start_date, num_records,
           function(err, rows){
              if (err){
     			   response.writeHead(500, { "Content-type": "text/html" });
@@ -97,7 +113,7 @@ function selectTemp(num_records, start_date, callback){
 			   console.log('Error serving querying database. ' + err);
 			   return;
 				      }
-             data.push(zone: zone_id[i][1], temperature_record:[rows])
+             data.push(zone: zone_id.sensors[i], temperature_record:[rows])
              callback(data);
           });
    };
@@ -141,10 +157,12 @@ var server = http.createServer(
       
       // Test to see if it's a request for current temperature   
       if (pathfile == '/temperature_now.json'){
-            readTemp(function(data){
-			      response.writeHead(200, { "Content-type": "application/json" });		
+            for (var i = 0; i < zone_id.length; i++) {
+                readTemp(zone_id[i], function(data){
+			      response.writeHead(200, { "Content-type": "application/json" });
 			      response.end(JSON.stringify(data), "ascii");
-               });
+                });
+            }
       return;
       }
       
